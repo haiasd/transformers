@@ -225,3 +225,86 @@ class TextIteratorStreamer(TextStreamer):
             raise StopIteration()
         else:
             return value
+
+
+class TextBatchIteratorStreamer(BaseStreamer):
+    """
+    Simple text streamer that prints the token(s) to stdout as soon as entire words are formed.
+
+    <Tip warning={true}>
+
+    The API for the streamer classes is still under development and may change in the future.
+
+    </Tip>
+
+    Parameters:
+        tokenizer (`AutoTokenizer`):
+            The tokenized used to decode the tokens.
+        skip_prompt (`bool`, *optional*, defaults to `False`):
+            Whether to skip the prompt to `.generate()` or not. Useful e.g. for chatbots.
+        decode_kwargs (`dict`, *optional*):
+            Additional keyword arguments to pass to the tokenizer's `decode` method.
+
+    Examples:
+
+        ```python
+        >>> from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
+
+        >>> tok = AutoTokenizer.from_pretrained("gpt2")
+        >>> model = AutoModelForCausalLM.from_pretrained("gpt2")
+        >>> inputs = tok(["An increasing sequence: one,"], return_tensors="pt")
+        >>> streamer = TextStreamer(tok)
+
+        >>> # Despite returning the usual output, the streamer will also print the generated text to stdout.
+        >>> _ = model.generate(**inputs, streamer=streamer, max_new_tokens=20)
+        An increasing sequence: one, two, three, four, five, six, seven, eight, nine, ten, eleven,
+        ```
+    """
+
+    def __init__(self, tokenizer: "AutoTokenizer", skip_prompt: bool = False,timeout: Optional[float] = None, **decode_kwargs):
+        self.tokenizer = tokenizer
+        self.skip_prompt = skip_prompt
+        self.decode_kwargs = decode_kwargs
+
+        # variables used in the streaming process
+        self.text_queue = Queue()
+        self.next_tokens_are_prompt = True
+        self.stop_signal = None
+        self.timeout = timeout
+
+    def put(self, value_list):
+        """
+        Receives tokens, decodes them, and prints them to stdout as soon as they form entire words.
+        """
+        if self.skip_prompt and self.next_tokens_are_prompt:
+            self.next_tokens_are_prompt = False
+            return
+        
+        text_list = ['']*value_list.shape[0]
+        for idx,value in enumerate(value_list):
+
+            # Add the new token to the cache and decodes the entire thing.
+            text_list[idx] = self.tokenizer.decode(value.tolist(), **self.decode_kwargs)
+        self.text_queue.put(text_list, timeout=self.timeout)
+
+
+    def end(self):
+        """Flushes any remaining cache and prints a newline to stdout."""
+        # Flush the cache, if it exists
+
+        self.next_tokens_are_prompt = True
+        
+        
+        self.text_queue.put(self.stop_signal, timeout=self.timeout)
+            
+            
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        value = self.text_queue.get(timeout=self.timeout)
+        if value == self.stop_signal:
+            raise StopIteration()
+        else:
+            return value
+
